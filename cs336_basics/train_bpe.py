@@ -1,10 +1,11 @@
 import os
+import sys
 import regex as re
 import multiprocessing as mp
 
 from typing import BinaryIO
 from multiprocessing import Pool, cpu_count
-from collections import Counter
+from collections import Counter, defaultdict
 
 
 def find_chunk_boundaries(
@@ -56,13 +57,25 @@ def find_chunk_boundaries(
     return sorted(set(chunk_boundaries))
 
 
-
-
-def pre_tokenize(start: int, end: int, filepath: str, special_tokens: list[str]) -> list[dict[tuple[int], int]]:
+def pre_tokenize(start: int, end: int, filepath: str, special_tokens: list[str]) -> list[dict[tuple[bytes,...], int]]:
     """
     Pre-tokenize a chunk of text and return the counts for each pre-token per document.
     Returns a list of dicts, where each dict maps (byte1, byte2, ...) -> count.
     Each token is represented as a tuple of byte values (0-255) from UTF-8 encoding.
+    
+    Args:
+        start (int): The start index of the chunk to pre-tokenize.
+        end (int): The end index of the chunk to pre-tokenize.
+        filepath (str): The path to the file to pre-tokenize.
+        special_tokens (list[str]): A list of string special tokens to be added to the tokenizer vocabulary.
+            These strings will never be split into multiple tokens, and will always be
+            kept as a single token. If these special tokens occur in the `input_path`,
+            they are treated as any other string.
+    
+    Returns:
+        list[dict[tuple[bytes], int]]:
+            A list of dicts, where each dict maps (byte1, byte2, ...) -> count, e.g. {(l,o,w): 5 ...}
+            each element in the list represents the pre-token counts for a document
     """
 
     with open(filepath, "rb") as f:
@@ -78,20 +91,155 @@ def pre_tokenize(start: int, end: int, filepath: str, special_tokens: list[str])
         token_pattern = re.compile(r"""'(?:[sdmt]|ll|ve|re)| ?\p{L}+| ?\p{N}+| ?[^\s\p{L}\p{N}]+|\s+(?!\S)|\s+""")
 
         # process each document chunk separately
-        document_token_counts = []
+        document_pretoken_counts = []
         for doc_chunk in document_chunks:
             if doc_chunk.strip():  # Skip empty chunks
-                token_counts = {}
+                token_counts = Counter()
                 for match in token_pattern.finditer(doc_chunk):
-                    token = match.group()
-                    token_bytes = token.encode("utf-8")
-                    # Convert bytes object to tuple of byte values (0-255)
-                    token_tuple = tuple(token_bytes)
-                    token_counts[token_tuple] = token_counts.get(token_tuple, 0) + 1
-                document_token_counts.append(token_counts)
+                    token = match.group() # pre-token string
+                    token_bytes = token.encode("utf-8") # bytes
+                    token_bytes_tuple = tuple(bytes([b]) for b in token_bytes)
+                    token_counts[token_bytes_tuple] += 1
+                document_pretoken_counts.append(token_counts)
         
-        return document_token_counts
+        return document_pretoken_counts
 
+def bpe_merges(
+        vocab: dict[int, bytes],
+        document_pretoken_counts: list[dict[tuple[bytes,...], int]],
+        vocab_size: int,
+) -> tuple[dict[int, bytes], list[tuple[bytes, bytes]]]:
+    """
+    Perform BPE merges until vocab_size is reached.
+    
+    Args:
+        vocab: Initial vocabulary (0-255 single bytes)
+        document_pretoken_counts: Pre-token counts per document
+        vocab_size: Target vocabulary size
+        special_tokens: Special tokens to preserve
+    
+    Returns:
+        (vocab, merges): Final vocabulary and merge operations
+    """
+    merges = []
+    bp = Counter() #byte pairs to occurrence count
+    adj = defaultdict(Counter) # track and count overlapping byte-pairs
+    leading_token_id = len(vocab)
+
+    # first pass to build up byte pairs counts and adjacency counts
+    for pretoken_counts in document_pretoken_counts:
+        # count byte pairs in a single document
+        for byte_tuple, counts in pretoken_counts.items():
+            # for every pretoken, get the byte pair
+            prev = None
+            for byte_idx in range(len(byte_tuple)-1):
+                pair = (byte_tuple[byte_idx],byte_tuple[byte_idx+1])
+                bp[pair]+=counts
+                if prev:
+                    # counts how many times bp specifically overlapped with adj bps
+                    adj[pair][prev] +=counts
+                    adj[prev][pair] +=counts
+                prev = pair
+
+    # loop to add to vocabulary
+    while len(vocab) < vocab_size:
+        # sort by greatest co-occurance, then lexicographic bytes
+        most_frequent_pair = max(bp.items(), key=lambda x: (x[1], x[0]))[0]
+
+        # add byte pair to merges and vocab
+        merges.append(most_frequent_pair)
+        merged_bp = most_frequent_pair[0] + most_frequent_pair[1]
+        vocab[leading_token_id] = merged_bp
+        leading_token_id+=1
+        del bp[most_frequent_pair] # remove the byte pair from bp count dict
+
+        # update adjacency dict and byte pair counts after merge
+        adj_list = adj[most_frequent_pair].items()
+        for adj_bp,adj_count in adj_list:
+            # update bp count for that neighbor
+            bp[adj_bp]-=adj_count
+            if bp[adj_bp] <= 0:
+                assert(bp[adj_bp]==0), 'ERROR: bp counter should never be negative! Check bp counter update'
+                del bp[adj_bp]
+        
+            # create new bp entries based on neighbor
+            if most_frequent_pair[1] == adj_bp[0]:
+                # neighbor overlaps on last byte of most frequent bp
+                new_bp = (merged_bp,adj_bp[1])
+                # TODO: update the new adjacent pairs in adj dict
+                adj[adj_bp[1]]+= adj_count
+            else:
+                # neighbor overlaps on first byte of most frequent bp
+                new_bp = (adj_bp[0],merged_bp)
+            bp[new_bp] = adj_count
+
+           
+            
+
+
+            # update adj counts associated with new_bp
+            del adj[adj_bp][most_frequent_pair]
+            if not adj[adj_bp]:
+                del adj[adj_bp]
+
+            
+            
+
+
+
+
+
+
+            # get those neighbors, new neighbors of merged_bp (exclude merged_bp)
+            
+
+
+
+
+    
+    # bp.items() returns ((bytes_tuple),count). Find count, then max bytes tuple (lexicographic)
+    most_frequent_pair = max(bp.items(), key=lambda x: (x[1], x[0]))[0]
+    print("DEBUG")
+    print(f"Type of most_frequent_pair: {type(most_frequent_pair)}")
+    print(f"most_frequent_pair: {most_frequent_pair}")
+    print(f"Length: {len(most_frequent_pair)}")
+    print(f"First element type: {type(most_frequent_pair[0])}")
+    print(f"Second element type: {type(most_frequent_pair[1])}")
+    sys.exit()
+    # while len(vocab) < vocab_size:
+    #     # add merged byte to vocabulary and list of merges
+    #     vocab[leading_token_id] = most_frequent_pair
+    #     leading_token_id+=1
+    #     merges.append(most_frequent_pair)
+
+        # update pretoken counts by removing individual bytes
+        # bp_update_locations = bp_locations[most_frequent_pair]  # TODO: implement location tracking
+        # for location in bp_update_locations:
+        #     doc_idx, pretoken_byte_tuple, pretoken_byte_idx = location
+        #     # assign value of old key with new key
+        #     # delete old key
+
+
+
+
+        # update bp by removing the bp entry for the merged
+
+
+
+
+
+    
+    # while len(vocab) < vocab_size:
+    #     # logic to update counts after merge
+    #     # get the byte pairs 
+        
+    #     # get byte pairs per document
+    #     for pretoken_counts in document_pretoken_counts:
+    #         for byte_tuple, counts in pretoken_counts:
+    #             for idx, byte in enumerate(byte_tuple):
+
+    return vocab, merges
+    
 
 def train_bpe(
     input_path: str | os.PathLike,
@@ -120,34 +268,39 @@ def train_bpe(
                 representing that <token1> was merged with <token2>.
                 Merges are ordered by order of creation.
     """
+    vocab = {}
+    # give special tokens token IDS first, following convention expected
+    for idx, special_token in enumerate(special_tokens):
+        vocab[idx] = special_token.encode("utf-8")
 
+    # after, token ids assigned to all single byte values (0-256)
+    offset = len(special_tokens)
+    for idx in range(256):
+        vocab[idx+offset] = bytes([idx])
+
+    # pretokenization: find chunk boundaries, create arglist for parallel input, run mp
     num_processes = kwargs.get("num_processes", mp.cpu_count())
 
-    # find chunk boundaries in text to parallelize pre-tokenization
     with open(input_path, "rb") as f:
         boundaries = find_chunk_boundaries(
             f, num_processes, "<|endoftext|>".encode("utf-8"))
-        
-        # parallelize pre-tokenization
-        start_end_pairs =list(zip(boundaries[:-1], boundaries[1:]))
-        num_pairs = len(start_end_pairs)
-
-        # parallelize pre-tokenization
-        argslist = [(start, end, input_path,special_tokens) for start, end in start_end_pairs]
-
-        with Pool(min(num_processes, num_pairs)) as p:
-            results =p.starmap(pre_tokenize, argslist)
     
-        print(len(results))
-        
-        # TO DO: apply bpe training algorithm.
+    start_end_pairs = list(zip(boundaries[:-1], boundaries[1:]))
+    num_pairs = len(start_end_pairs)
+    argslist = [(start, end, input_path, special_tokens) for start, end in start_end_pairs]
+    with Pool(min(num_processes, num_pairs)) as p:
+        results = p.starmap(pre_tokenize, argslist)
 
-        # After pre-tokenization, add this to test just that part:
-        # print(f"Pre-token counts: {len(pre_token_counts)}")
-        # print(f"Sample tokens: {list(pre_token_counts.keys())[:10]}")
-    
-        # Return early to test just pre-tokenization
-        raise NotImplementedError("Testing pre-tokenization only")
+    # combine parallel results by unrolling into a single list of dicts
+    all_docs_pretoken_counts = []
+    for result in results:
+        all_docs_pretoken_counts.extend(result)
+
+    # perform bpe_merges until vocab size is reached.
+    vocab, merges = bpe_merges(vocab, all_docs_pretoken_counts, vocab_size)
+
+    # Return vocab and merges
+    return tuple(vocab,merges)
 
 # Test script 
 
