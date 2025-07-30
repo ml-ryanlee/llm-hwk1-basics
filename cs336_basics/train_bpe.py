@@ -104,6 +104,48 @@ def pre_tokenize(start: int, end: int, filepath: str, special_tokens: list[str])
         
         return document_pretoken_counts
 
+
+def remove_pretoken_pairs(pretok_bytes, pretok_counts, pair_counts, pair2pretoks, pretok_id):
+    """Remove all pairs from this pretoken from global counts"""
+    for i in range(len(pretok_bytes)-1):
+        # "erase" pair counts for old pretoken
+        pair = (pretok_bytes[i],pretok_bytes[i+1])
+        pair_counts[pair]-= pretok_counts
+        if pair_counts[pair] <= 0:
+            del pair_counts[pair]
+
+        # remove pair from pair2pretoks for old pretoken
+        pair2pretoks[pair].discard(pretok_id)
+        if not pair2pretoks[pair]:
+            del pair2pretoks[pair] # delete entry if pair has no pretokens associated
+
+
+def apply_merge(pretok_bytes, merge_pair):
+    """Apply merge with simple left-to-right scan (handles overlaps correctly)"""
+    idx=0
+    new_pretok_bytes = []
+    new_merged_byte = merge_pair[0]+merge_pair[1]
+    while idx < len(pretok_bytes):
+        if (idx < len(pretok_bytes)-1 and
+             (pretok_bytes[idx],pretok_bytes[idx+1])== merge_pair):
+            new_pretok_bytes.append(new_merged_byte)
+            idx+=2 #skip over the merged right byte
+        else:
+            new_pretok_bytes.append(pretok_bytes[idx])
+            idx+=1
+    return new_pretok_bytes
+
+def add_pretoken_pairs(new_pretok_bytes, pretok_counts, pair_counts, pair2pretoks, pretok_id):
+    """Add pairs from new pretoken (with max pair merged) from global counts"""
+    for i in range(len(new_pretok_bytes)-1):
+        # "erase" pair counts for old pretoken
+        pair = (new_pretok_bytes[i],new_pretok_bytes[i+1])
+        pair_counts[pair] += pretok_counts
+
+        # add pair from pair2pretoks for old pretoken
+        pair2pretoks[pair].add(pretok_id)
+
+
 def bpe_merges(
         vocab: dict[int, bytes],
         pretoken_counts: Counter[tuple[bytes,...]],
@@ -111,116 +153,60 @@ def bpe_merges(
 ) -> tuple[dict[int, bytes], list[tuple[bytes, bytes]]]:
     """
     Perform BPE merges until vocab_size is reached.
+    Simpler incremental: only update impacted pretokens, but with cleaner logic.
     
     Args:
         vocab: Initial vocabulary (0-255 single bytes)
-        document_pretoken_counts: Pre-token counts per document
+        pretoken_counts: Pre-token counts 
         vocab_size: Target vocabulary size
-        special_tokens: Special tokens to preserve
     
     Returns:
         (vocab, merges): Final vocabulary and merge operations
     """
     merges = []
-    bp = Counter() #byte pairs to occurrence count
     leading_token_id = len(vocab)
+    
+    # initialize local data structures to keep track of pretok byte lists, pretok counts (static), pair counts, bp to pretokens 
+    pretoks = {i:list(byte_tuple) for i,byte_tuple in enumerate(pretoken_counts.keys())} # pretok id : byte list
+    pretok_counts = {i:counts for i, (_,counts) in enumerate(pretoken_counts.items())} # pretok id : pretoken count (static)
+    pair_counts = Counter() # bp counts
+    pair2pretoks = defaultdict(set) # bp to pretok ids
 
-    # data structures to keep track of byte sequences and byte pairs
-    bp_counts = Counter()
-    bp2pretokens = defaultdict(set)  # Use set for O(1) remove operations
-    pretoken2bps = defaultdict(set)  # Use set for O(1) remove operations
-    pretoken_idx = 0
+    # initial pass to count byte pairs in corpus
+    for pretok_id, pretok_bytes in pretoks.items():
+        for i in range(len(pretok_bytes)-1):
+            # update byte pair counts
+            pair = (pretok_bytes[i],pretok_bytes[i+1])
+            pair_counts[pair] += pretok_counts[pretok_id]
+            
+            # add map from bp to pretoken it occurred in
+            pair2pretoks[pair].add(pretok_id)
 
-    # iterate through pretokens in corpus to find initial byte pairs
-    for byte_tuple, counts in pretoken_counts.items():
-        # for each byte in the pretoken
-        for i, _ in enumerate(byte_tuple):
-            if i >= 1:
-                # update bp counts
-                bp = (byte_tuple[i-1],byte_tuple[i])
-                bp_counts[bp] += counts
-
-                # for the given bp, list the pretoken sources and counts from source
-                bp2pretokens[bp].add((pretoken_idx,counts,i-1,i))
-
-                # for a given pretoken, list the bps as well as left and right indices
-                pretoken2bps[pretoken_idx].add((bp,i-1,i))
-
-        # increase the index on pretoken ids
-        pretoken_idx+=1
-
-    # loop to add to the vocabulary until vocab_size is reached
+    # main loop for be merges
     while len(vocab) < vocab_size:
-        # sort by greatest co-occurance, then lexicographic bytes 
-        max_bp = max(bp_counts.items(), key=lambda x: (x[1], x[0]))[0]
+        # find the max bp, update merges and vocab
+        max_pair = max(pair_counts.items(),key=lambda x: (x[1], x[0]))[0]
+        merges.append(max_pair)
+        max_pair_merged = max_pair[0]+max_pair[1]
+        vocab[leading_token_id] = max_pair_merged
+        leading_token_id+=1
+    
+        # find impacted pretokens
+        impacted_pretoks = pair2pretoks[max_pair].copy()
 
-        # add max_bp to merges
-        merges.append(max_bp)
+        for pretok_id in impacted_pretoks:
+            pretok_bytes = pretoks[pretok_id]
+            impacted_pretok_counts = pretok_counts[pretok_id]
+            # for each impacted pretoken remove all counts for bps in these pretokens
+            remove_pretoken_pairs(pretok_bytes,impacted_pretok_counts,pair_counts,pair2pretoks,pretok_id)
+            
+            # remake the pretoken bytes list with merged token, overwrite old pretoken bytes
+            new_pretok_bytes = apply_merge(pretok_bytes,max_pair)
+            pretoks[pretok_id]=new_pretok_bytes
 
-        # create a merged byte object and add it to vocab
-        merged_bp = max_bp[0] + max_bp[1]
-        vocab[leading_token_id] = merged_bp
-        leading_token_id += 1
-
-        # delete the max_bp from the bp_counts
-        del bp_counts[max_bp]
-
-        # Get the list of impacted pretokens associated with the merged bp
-        impacted_pretokens = bp2pretokens[max_bp]
-        for pretoken_tuple in impacted_pretokens:
-            # remember we stored the pretoken id, pretoken counts, left and right indices of where merged bp was in pretoken
-            pretoken_ref_idx, pretoken_ref_counts, premerge_left, premerge_right = pretoken_tuple
-
-            # get the list of the bps associated with the given pretoken
-            bps_in_pretoken = pretoken2bps[pretoken_ref_idx]
-
-            # Collect changes to apply after the loop
-            to_remove = set()  # Use set instead of list for efficiency
-            to_add = set()     # Use set instead of list for efficiency
-
-            # remove the max_bp from the pretoken list, we are interested in the others
-            bps_in_pretoken.remove((max_bp, premerge_left, premerge_right))
-
-            # iterate through other bps associated with given pretoken
-            for old_bp_tuple in bps_in_pretoken:
-                adj_bp, adj_left, adj_right = old_bp_tuple
-
-                # identified bp overlapping with first byte of premerge max bp
-                if premerge_left == adj_right:
-                    new_bp = (adj_bp[0], merged_bp) # first element of adj left with merged bp is new bp
-                    to_remove.add((adj_bp, adj_left, adj_right))  # list the adj left bp for removal
-                    to_add.add((new_bp, adj_left, premerge_right)) # list the new bp for addition to bps in pretoken
-                
-                # identified bp overlapping with last byte of premerge max bp
-                elif premerge_right == adj_left:
-                    new_bp = (merged_bp,adj_bp[1])
-                    to_remove.add((adj_bp, adj_left, adj_right))
-                    to_add.add((new_bp,premerge_left,adj_right))
-
-            # Apply changes after the loop
-            for old_bp_tuple in to_remove:
-                # pass by reference modification to pretoken2bps[pretoken_idx]
-                bps_in_pretoken.remove(old_bp_tuple) # removes overlapping bp from list
-
-                # old bp may be in other pretokens, so just remove the reference to impacted pretoken 
-                old_bp, old_left, old_right = old_bp_tuple
-                pretoken_ref_tuple = (pretoken_ref_idx, pretoken_ref_counts, old_left, old_right)
-                bp2pretokens[old_bp].remove(pretoken_ref_tuple)
-                bp_counts[old_bp] -= pretoken_ref_counts
-                if bp_counts[old_bp] <= 0:
-                    del bp_counts[old_bp]
-
-            for new_bp_tuple in to_add:
-                bps_in_pretoken.add(new_bp_tuple)
-                # Also add to bp2pretokens and update bp_counts
-                new_bp, new_left, new_right = new_bp_tuple
-                bp2pretokens[new_bp].add((pretoken_ref_idx, pretoken_ref_counts, new_left, new_right))
-                bp_counts[new_bp] += pretoken_ref_counts
-
-        # Clear bp2pretokens for the merged BP since it no longer exists
-        del bp2pretokens[max_bp]
-
-
+            # recount the pretoks with new byte list
+            add_pretoken_pairs(new_pretok_bytes, impacted_pretok_counts, pair_counts,pair2pretoks, pretok_id)
+    
     return vocab, merges
     
 
@@ -284,5 +270,4 @@ def train_bpe(
     vocab, merges = bpe_merges(vocab, pretoken_counts, vocab_size)
 
     # Return vocab and merges
-    return tuple(vocab,merges)
-
+    return vocab, merges
