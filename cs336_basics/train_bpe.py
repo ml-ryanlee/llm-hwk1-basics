@@ -1,11 +1,12 @@
 import os
-import sys
 import regex as re
 import multiprocessing as mp
 
 from typing import BinaryIO
-from multiprocessing import Pool, cpu_count
+from multiprocessing import Pool
 from collections import Counter, defaultdict
+
+import pickle
 
 
 def find_chunk_boundaries(
@@ -264,10 +265,55 @@ def train_bpe(
     all_docs_pretoken_counts = []
     for result in results:
         all_docs_pretoken_counts.extend(result)
-    pretoken_counts = sum(all_docs_pretoken_counts,Counter())
+
+    # combine results into single counter
+    pretoken_counts = Counter()
+    for doc_counts in all_docs_pretoken_counts:
+        pretoken_counts.update(doc_counts)
 
     # perform bpe_merges until vocab size is reached.
     vocab, merges = bpe_merges(vocab, pretoken_counts, vocab_size)
 
     # Return vocab and merges
     return vocab, merges
+
+
+def save_merges(merges, save_path):
+    """Save merges using pickle - preserves exact bytes objects"""
+    with open(save_path, 'wb') as f:
+        pickle.dump(merges, f)
+
+
+def load_merges(load_path):
+    """Load merges from pickle - returns exact original list"""
+    with open(load_path, 'rb') as f:
+        return pickle.load(f)
+
+
+def save_vocab(vocab, save_path):
+    """Save vocab using pickle - preserves exact bytes objects"""
+    with open(save_path, 'wb') as f:
+        pickle.dump(vocab, f)
+
+
+def load_vocab(load_path):
+    """Load vocab from pickle - returns exact original dict"""
+    with open(load_path, 'rb') as f:
+        return pickle.load(f)
+
+def save_vocab_and_merges(vocab, merges, save_dir):
+    """Save vocab and merges using pickle format"""
+    os.makedirs(save_dir, exist_ok=True)
+    
+    # Save vocab as pickle
+    vocab_path = os.path.join(save_dir, "vocab.pkl")
+    save_vocab(vocab, vocab_path)
+    
+    # Save merges as pickle
+    merges_path = os.path.join(save_dir, "merges.pkl")
+    save_merges(merges, merges_path)
+    
+    print(f"Saved vocab to {vocab_path}")
+    print(f"Saved merges to {merges_path}")
+    
+    return vocab_path, merges_path
