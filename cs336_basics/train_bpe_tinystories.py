@@ -7,8 +7,8 @@ from .train_bpe import train_bpe, save_vocab_and_merges
 
 def main():
     # directories
-    input_path = "data/TinyStoriesV2-GPT4-valid.txt"
-    save_dir = "results/TinyStories-valid-results"
+    input_path = "data/TinyStoriesV2-GPT4-train.txt"
+    save_dir = "results/TinyStories-train-results"
 
     # initialize profiling
     pr = cProfile.Profile()
