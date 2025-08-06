@@ -5,6 +5,7 @@ from multiprocessing import Pool
 from typing import List, Tuple
 import time
 from pathlib import Path
+from tqdm import tqdm
 
 from .tokenizer import Tokenizer
 from .train_bpe import find_chunk_boundaries
@@ -80,11 +81,17 @@ def encode_dataset_parallel(
     all_token_ids = []
     with Pool(processes=num_processes) as pool:
         print("Processing chunks...")
-        chunk_results = pool.map(encode_text_chunk, chunk_args)
+        # Use tqdm to show progress as chunks complete
+        chunk_results = []
+        with tqdm(total=len(chunk_args), desc="Encoding chunks", unit="chunk") as pbar:
+            # Use imap for progress tracking
+            for result in pool.imap(encode_text_chunk, chunk_args):
+                chunk_results.append(result)
+                pbar.update(1)
         
         # Combine results
-        for i, token_ids in enumerate(chunk_results):
-            print(f"Chunk {i+1}/{len(chunk_results)}: {len(token_ids)} tokens")
+        print("Combining chunk results...")
+        for i, token_ids in enumerate(tqdm(chunk_results, desc="Combining results", unit="chunk")):
             all_token_ids.extend(token_ids)
     
     # Convert to NumPy array with uint16 datatype
