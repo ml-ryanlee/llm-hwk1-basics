@@ -4,6 +4,9 @@ import sys
 import torch.nn as nn
 import torch.nn.functional as F
 from einops import rearrange, einsum, reduce, repeat
+from typing import IO, Any, BinaryIO
+from jaxtyping import Float, Int
+from torch import Tensor
 
 # y = Wx (no bias terms!)
 class Linear(nn.Module):
@@ -20,7 +23,7 @@ class Linear(nn.Module):
         # assign as instance variable
         self.weight = nn.Parameter(weights)
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
+    def forward(self, x: Tensor) -> Tensor:
         # on input side of expression, d_in is last dim of x so "... d_in"
         # on output side of einsum expression, so "... d_out" follows convention
         # to put the output dim last
@@ -40,7 +43,7 @@ class Embedding(nn.Module):
         # save and enroll as torch param
         self.embeddings = nn.Parameter(embeddings)
 
-    def forward(self, token_ids: torch.Tensor) -> torch.Tensor:
+    def forward(self, token_ids: Tensor) -> Tensor:
         # for every id, we need to pull the row vector associated
         return self.embeddings[token_ids]
 
@@ -54,7 +57,7 @@ class RMSNorm(nn.Module):
         self.d_model = d_model
         self.eps = eps
     
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
+    def forward(self, x: Tensor) -> Tensor:
         # upcast input to torch.float32
         in_dtype = x.dtype
         x = x.to(torch.float32)
@@ -82,7 +85,7 @@ class positionwise_feedforward(nn.Module):
         self.w2_weight = Linear(d_ff, d_model,device=device, dtype=dtype)
         self.w3_weight = Linear(d_model, d_ff, device=device, dtype=dtype) 
 
-    def forward(self,x: torch.Tensor)-> torch.Tensor:
+    def forward(self,x: Tensor)-> Tensor:
         # FFN = W2*(SiLU(W1*X) dot W3X)
         silu_in = self.w1_weight.forward(x)
         silu_out = silu_in * torch.sigmoid(silu_in)
@@ -106,31 +109,49 @@ class rope(nn.Module):
         for i in range(max_seq_len):
             for k in range(d_k//2):
                 angle = i/(theta**(2*k/d_k))
-                rot = torch.tensor([[math.cos(angle), -math.sin(angle)],
+                rot = Tensor([[math.cos(angle), -math.sin(angle)],
                                     [math.sin(angle), math.cos(angle)]])
                 rotations[i,k,:] = rot
 
         self.register_buffer("rotations",rotations,persistent=False)
 
 
-    def forward(self, x: torch.Tensor, token_positions: torch.Tensor) -> torch.Tensor:
+    def forward(self, x: Tensor, token_positions: Tensor) -> Tensor:
         """
         self.rotations shape: (seq_dim, feature_dim, 2, 2)
         x: tensor of shape (..., seq_dim, feature_dim)
         token_positions: tensor of shape (..., seq_dim)
         """
         # get the correct rotation matrices 
-        # by default, 0'th dim of array_indexed is index dim, last dim of input is feature dim
+        # by default, 0'th dim of array_indexed is index dim, last dim of indices is feature dim
         rot = self.rotations[token_positions] # shape (..., seq_dim feature_dim, 2, 2)
        
         # rearrange by every two elements along feature dim of input x
-        x_pairs = rearrange(x, "... seq_dim (feature_dim pair) -> ... seq_dim feature_dim pair",pair=2)
+        x_pairs = rearrange(x, "... seq_dim (feature_dim i) -> ... seq_dim feature_dim i",i=2)
         
-        # apply rotations to these. for each pairwise position: (ixj)@(j,)->(i,)
+        # apply rotations to these. for each pairwise position is A@x->y : (ixj)@(j,)->(i,)
         y_pairs = einsum(rot,x_pairs,"... seq_dim feature_dim i j, ... seq_dim feature_dim j -> ... seq_dim feature_dim i")
 
         # reshape y_pairs back to original shape
         y = rearrange(y_pairs, "... seq_dim feature_dim i -> ... seq_dim (feature_dim i)")
 
         return y
+
+def softmax(logits: Float[Tensor, " ..."], dim: int) -> Float[Tensor, " ..."]:
+    # get max values over specified dimension
+    max_values = torch.max(logits,dim=dim,keepdim=True).values
+
+    # subtract max_values from x so max element is 0
+    shifted = logits-max_values # broadcast should work
+
+    # get exp of shifted terms
+    shifted_exps = torch.exp(shifted)
+
+    # get sum of shifted terms
+    shifted_exp_sums = torch.sum(shifted_exps, dim=dim, keepdim=True)
+
+    # calculate product
+    product = shifted_exps / shifted_exp_sums
+
+    return product
 
