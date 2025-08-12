@@ -1,0 +1,17 @@
+LICENSE
+README.md
+pyproject.toml
+cs336_basics/__init__.py
+cs336_basics/pretokenization_example.py
+cs336_basics.egg-info/PKG-INFO
+cs336_basics.egg-info/SOURCES.txt
+cs336_basics.egg-info/dependency_links.txt
+cs336_basics.egg-info/requires.txt
+cs336_basics.egg-info/top_level.txt
+tests/test_data.py
+tests/test_model.py
+tests/test_nn_utils.py
+tests/test_optimizer.py
+tests/test_serialization.py
+tests/test_tokenizer.py
+tests/test_train_bpe.py
