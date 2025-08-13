@@ -5,7 +5,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from einops import rearrange, einsum, reduce, repeat
 from typing import IO, Any, BinaryIO
-from jaxtyping import Float, Int
+from jaxtyping import Float, Int,Bool
 from torch import Tensor
 
 # y = Wx (no bias terms!)
@@ -154,4 +154,45 @@ def softmax(logits: Float[Tensor, " ..."], dim: int) -> Float[Tensor, " ..."]:
     product = shifted_exps / shifted_exp_sums
 
     return product
+
+def scaled_dot_product_attention(
+        Q: Float[Tensor, " ... queries d_k"],
+        K: Float[Tensor, " ... keys d_k"],
+        V: Float[Tensor, " ... values d_v"],
+        mask: Bool[Tensor, " ... queries keys"] | None = None,
+        ) -> Float[Tensor, " ... queries d_v"]:
+    """
+    Given key (K), query (Q), and value (V) tensors, return
+    the output of your scaled dot product attention implementation.
+
+    Args:
+        let m be seq length of inputs, n be seq length of outputs
+        d_k is look-up dim, d_v is value dim
+        Q (Float[Tensor, "batch ... n d_k"]): Query tensor
+        K (Float[Tensor, "batch ... m d_k"]): Key tensor
+        V (Float[Tensor, "batch ... m d_v"]): Values tensor
+        mask (Float[Tensor, " ... n m"] | None): Mask tensor
+    Returns:
+        Float[Tensor, " ... n d_v"]: Output of SDPA
+    """
+
+    # get the key feature dim (should be last dim of Q and K)
+    d_k = Q.shape[-1]
+    assert d_k == K.shape[-1]
+
+    # calculate the weighted scores (similarity product)
+    scores = einsum(Q,K,"... n d_k, ... m d_k -> ... n m") / math.sqrt(d_k)
+
+    # apply the mask if there is one
+    if mask is not None:
+        attn_mask = torch.where(mask,0.0, float('-inf')) #torch.where for boolean tensors
+        scores = scores+attn_mask
+
+    # calculate the weighted
+    weights = softmax(scores, dim=-1) # the softmax should be taken over the m inputs at an i'th output pos. 
+
+    # return weights@V
+    return einsum(weights,V,"... n m, ... m d_v -> ... n d_v")
+
+
 
