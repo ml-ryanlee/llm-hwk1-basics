@@ -8,6 +8,7 @@ from cs336_basics.train_bpe import train_bpe
 from cs336_basics.tokenizer import Tokenizer
 from cs336_basics.layers import Linear,Embedding, RMSNorm,positionwise_feedforward
 from cs336_basics.layers import rope, softmax,scaled_dot_product_attention
+from cs336_basics.layers import multihead_self_attention
 import numpy.typing as npt
 import torch
 from torch import Tensor
@@ -95,7 +96,7 @@ def run_scaled_dot_product_attention(
     Q: Float[Tensor, " ... queries d_k"],
     K: Float[Tensor, " ... keys d_k"],
     V: Float[Tensor, " ... values d_v"],
-    mask: Bool[Tensor, " ... queries keys"] | None = None,
+    mask: Float[Tensor, " ... queries keys"] | None = None,
 ) -> Float[Tensor, " ... queries d_v"]:
     """
     Given key (K), query (Q), and value (V) tensors, return
@@ -105,7 +106,7 @@ def run_scaled_dot_product_attention(
         Q (Float[Tensor, " ... queries d_k"]): Query tensor
         K (Float[Tensor, " ... keys d_k"]): Key tensor
         V (Float[Tensor, " ... values d_v"]): Values tensor
-        mask (Bool[Tensor, " ... queries keys"] | None): Mask tensor
+        mask (Float[Tensor, " ... queries keys"] | None): Mask tensor
     Returns:
         Float[Tensor, " ... queries d_v"]: Output of SDPA
     """
@@ -131,10 +132,14 @@ def run_multihead_self_attention(
     Args:
         d_model (int): Dimensionality of the feedforward input and output.
         num_heads (int): Number of heads to use in multi-headed attention.
+
+        !!! Ryan's Note: The below dimensions are NOT what is given in test code.
+        What is given is the full Q,K,V,O projection weights with shape (batch, d_in d_in)
+
         max_seq_len (int): Maximum sequence length to pre-cache if your implementation does that.
         q_proj_weight (Float[Tensor, "d_k d_in"]): Weights for the Q projection
         k_proj_weight (Float[Tensor, "d_k d_in"]): Weights for the K projection
-        v_proj_weight (Float[Tensor, "d_k d_in"]): Weights for the V projection
+        v_proj_weight (Float[Tensor, "d_v d_in"]): Weights for the V projection
         o_proj_weight (Float[Tensor, "d_model d_v"]): Weights for the output projection
         in_features (Float[Tensor, "... sequence_length d_in"]): Tensor to run your implementation on.
 
@@ -142,7 +147,15 @@ def run_multihead_self_attention(
         Float[Tensor, " ... sequence_length d_out"]: Tensor with the output of running your optimized, batched multi-headed attention
         implementation with the given QKV projection weights and input features.
     """
-    raise NotImplementedError
+    layer = multihead_self_attention(d_model, num_heads)
+    
+    # we use .weight convention because we initialized
+    layer.load_state_dict({"q_proj_weight.weight":q_proj_weight,
+                           "k_proj_weight.weight":k_proj_weight,
+                           "v_proj_weight.weight":v_proj_weight,
+                           "o_proj_weight.weight":o_proj_weight})
+
+    return layer.forward(in_features)
 
 
 def run_multihead_self_attention_with_rope(

@@ -159,7 +159,7 @@ def scaled_dot_product_attention(
         Q: Float[Tensor, " ... queries d_k"],
         K: Float[Tensor, " ... keys d_k"],
         V: Float[Tensor, " ... values d_v"],
-        mask: Bool[Tensor, " ... queries keys"] | None = None,
+        mask: Float[Tensor, " ... queries keys"] | None = None,
         ) -> Float[Tensor, " ... queries d_v"]:
     """
     Given key (K), query (Q), and value (V) tensors, return
@@ -185,7 +185,8 @@ def scaled_dot_product_attention(
 
     # apply the mask if there is one
     if mask is not None:
-        attn_mask = torch.where(mask,0.0, float('-inf')) #torch.where for boolean tensors
+        bool_mask = mask.bool() # compatible if somehow, input is mask bool or if float
+        attn_mask = torch.where(bool_mask,0.0, float('-inf')) #torch.where for boolean tensors
         scores = scores+attn_mask
 
     # calculate the weighted
@@ -194,5 +195,73 @@ def scaled_dot_product_attention(
     # return weights@V
     return einsum(weights,V,"... n m, ... m d_v -> ... n d_v")
 
+class multihead_self_attention(nn.Module):
+    """
+    Args:
+        d_model (int): Dimensionality of the feedforward input and output.
+        num_heads (int): Number of heads to use in multi-headed attention.
+        max_seq_len (int): Maximum sequence length to pre-cache if your implementation does that.
+        q_proj_weight (Float[Tensor, "d_k d_in"]): Weights for the Q projection
+        k_proj_weight (Float[Tensor, "d_k d_in"]): Weights for the K projection
+        v_proj_weight (Float[Tensor, "d_k d_in"]): Weights for the V projection
+        o_proj_weight (Float[Tensor, "d_model d_v"]): Weights for the output projection
+        in_features (Float[Tensor, "... sequence_length d_in"]): Tensor to run your implementation on.
 
+    Returns:
+        Float[Tensor, " ... sequence_length d_out"]: Tensor with the output of running your optimized, batched multi-headed attention
+        implementation with the given QKV projection weights and input features.
+    """
+    def __init__(self, d_model:int, num_heads:int, max_seq_len:int=None, device=None, dtype=None):    
+        super().__init__()
+        
+        # initialize the multi-head self attention weights as 1 large matrix (which will be sliced)
+        assert d_model % num_heads == 0, f"d_model ({d_model}) must be divisible by num_heads ({num_heads})"
+        
+        self.d_model = d_model
+        self.num_heads = num_heads
+
+        self.q_proj_weight = Linear(d_model, d_model, device=device, dtype=dtype)
+        self.k_proj_weight = Linear(d_model, d_model, device=device, dtype=dtype)
+        self.v_proj_weight = Linear(d_model, d_model, device=device, dtype=dtype)
+        self.o_proj_weight = Linear(d_model, d_model, device=device, dtype=dtype)
+
+        if max_seq_len:
+            causal_mask = torch.tril(torch.ones(max_seq_len, max_seq_len))
+            self.register_buffer("causal_mask", causal_mask, persistent=False)
+        else:
+            self.register_buffer("causal_mask", None, persistent=False)
+
+    def forward(self, x: Float[Tensor, " ..."])->Float[Tensor, " ..."]:
+        # get Q, K, V matrices
+        Q = self.q_proj_weight.forward(x) # output shape is [batch seq d_model]
+        K = self.k_proj_weight.forward(x)
+        V = self.v_proj_weight.forward(x)
+
+        # create causal mask intepreting the second to last dim as seq dim
+        if self.causal_mask is None:    
+            seq_dim = x.shape[-2]
+            cmask = torch.tril(torch.ones(seq_dim,seq_dim))
+        else:
+            cmask = self.causal_mask
+
+        # get slice size for multi-head self attention
+        d_k = self.d_model // self.num_heads
+        d_v = self.d_model // self.num_heads
+
+        q_heads = rearrange(Q,"batch seq (heads d_k) -> batch heads seq d_k", d_k=d_k)
+        k_heads = rearrange(K,"batch seq (heads d_k) -> batch heads seq d_k", d_k=d_k)
+        v_heads = rearrange(V, "batch seq (heads d_v) -> batch heads seq d_v", d_v=d_v)
+
+        mha_heads = scaled_dot_product_attention(q_heads, k_heads, v_heads, cmask)
+        mha = rearrange(mha_heads, "batch heads seq d_v -> batch seq (heads d_v)")
+
+        # apply o_proj_weight to the concatenated multi-head attention product
+        out = self.o_proj_weight.forward(mha)
+
+        return out
+        
+
+    
+
+        
 
