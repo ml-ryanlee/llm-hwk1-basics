@@ -4,7 +4,7 @@ import sys
 import torch.nn as nn
 import torch.nn.functional as F
 from einops import rearrange, einsum, reduce, repeat
-from typing import IO, Any, BinaryIO
+from typing import IO, Any, BinaryIO, Optional
 from jaxtyping import Float, Int,Bool
 from torch import Tensor
 
@@ -41,11 +41,11 @@ class Embedding(nn.Module):
         embeddings = nn.init.trunc_normal_(embeddings,mean=0.0,std=1.0,a=-3,b=3)
 
         # save and enroll as torch param
-        self.embeddings = nn.Parameter(embeddings)
+        self.weight = nn.Parameter(embeddings)
 
     def forward(self, token_ids: Tensor) -> Tensor:
         # for every id, we need to pull the row vector associated
-        return self.embeddings[token_ids]
+        return self.weight[token_ids]
 
 class RMSNorm(nn.Module):
     def __init__(self, d_model: int, eps: float = 1e-5, device=None, dtype=None):
@@ -53,7 +53,7 @@ class RMSNorm(nn.Module):
 
         # initialize gain factor
         gain = torch.empty(d_model, dtype=dtype, device=device)
-        self.gain = nn.Parameter(gain) #learnable
+        self.weight = nn.Parameter(gain) #learnable
         self.d_model = d_model
         self.eps = eps
     
@@ -68,7 +68,7 @@ class RMSNorm(nn.Module):
         rms = torch.sqrt(mean_squared_sum+self.eps)
 
         # normalize with the rms and gain
-        gain_product = einsum(x,self.gain, "b seq d, d -> b seq d")
+        gain_product = einsum(x,self.weight, "b seq d, d -> b seq d")
 
         # divide by rms (elementwise, so input shape preserved)
         rms_norm = einsum(gain_product,1/rms, "b seq d, b seq -> b seq d")
@@ -76,26 +76,26 @@ class RMSNorm(nn.Module):
         # return result to original dtype
         return rms_norm.to(in_dtype)
     
-class positionwise_feedforward(nn.Module):
+class PositionwiseFeedforward(nn.Module):
     def __init__(self, d_model:int, d_ff:int,device=None, dtype=None):
         super().__init__()
         
         # initialize parameters of SWiGLU FFN
-        self.w1_weight = Linear(d_model, d_ff, device=device, dtype=dtype)
-        self.w2_weight = Linear(d_ff, d_model,device=device, dtype=dtype)
-        self.w3_weight = Linear(d_model, d_ff, device=device, dtype=dtype) 
+        self.w1 = Linear(d_model, d_ff, device=device, dtype=dtype)
+        self.w2 = Linear(d_ff, d_model,device=device, dtype=dtype)
+        self.w3 = Linear(d_model, d_ff, device=device, dtype=dtype) 
 
     def forward(self,x: Tensor)-> Tensor:
         # FFN = W2*(SiLU(W1*X) dot W3X)
-        silu_in = self.w1_weight.forward(x)
+        silu_in = self.w1.forward(x)
         silu_out = silu_in * torch.sigmoid(silu_in)
-        gate = self.w3_weight.forward(x)
+        gate = self.w3.forward(x)
         gated_prod = silu_out * gate
-        final_prod = self.w2_weight.forward(gated_prod)
+        final_prod = self.w2.forward(gated_prod)
         return final_prod
 
-class rope(nn.Module):
-    def __init__(self, theta: float, d_k: int, max_seq_len: int, device=None):
+class RotaryPositionalEmbedding(nn.Module):
+    def __init__(self, theta: float, d_k: int, max_seq_len: int, device=None, dtype=None):
         """
         theta: float Θ value for the RoPE
         d_k: int dimension of query and key vectors
@@ -103,7 +103,7 @@ class rope(nn.Module):
         device: torch.device | None = None Device to store the buffer on
         """
         super().__init__()
-        rotations = torch.empty(max_seq_len,d_k//2,2,2,device=device)
+        rotations = torch.empty(max_seq_len,d_k//2,2,2,device=device,dtype=dtype)
         
         # initialize rotation matrix
         for i in range(max_seq_len):
@@ -195,7 +195,7 @@ def scaled_dot_product_attention(
     # return weights@V
     return einsum(weights,V,"... n m, ... m d_v -> ... n d_v")
 
-class multihead_self_attention(nn.Module):
+class MultiheadSelfAttention(nn.Module):
     """
     Args:
         d_model (int): Dimensionality of the feedforward input and output.
@@ -211,7 +211,7 @@ class multihead_self_attention(nn.Module):
         Float[Tensor, " ... sequence_length d_out"]: Tensor with the output of running your optimized, batched multi-headed attention
         implementation with the given QKV projection weights and input features.
     """
-    def __init__(self, d_model:int, num_heads:int, max_seq_len:int=None, device=None, dtype=None):    
+    def __init__(self, d_model:int, num_heads:int, max_seq_len:int=None, theta:float=None, device=None, dtype=None):    
         super().__init__()
         
         # initialize the multi-head self attention weights as 1 large matrix (which will be sliced)
@@ -220,29 +220,39 @@ class multihead_self_attention(nn.Module):
         self.d_model = d_model
         self.num_heads = num_heads
 
-        self.q_proj_weight = Linear(d_model, d_model, device=device, dtype=dtype)
-        self.k_proj_weight = Linear(d_model, d_model, device=device, dtype=dtype)
-        self.v_proj_weight = Linear(d_model, d_model, device=device, dtype=dtype)
-        self.o_proj_weight = Linear(d_model, d_model, device=device, dtype=dtype)
+        self.q_proj = Linear(d_model, d_model, device=device, dtype=dtype)
+        self.k_proj = Linear(d_model, d_model, device=device, dtype=dtype)
+        self.v_proj = Linear(d_model, d_model, device=device, dtype=dtype)
+        self.output_proj = Linear(d_model, d_model, device=device, dtype=dtype)
 
         if max_seq_len:
-            causal_mask = torch.tril(torch.ones(max_seq_len, max_seq_len))
+            causal_mask = torch.tril(torch.ones(max_seq_len, max_seq_len, dtype=dtype, device=device))
             self.register_buffer("causal_mask", causal_mask, persistent=False)
         else:
             self.register_buffer("causal_mask", None, persistent=False)
+        
+        assert theta is None or max_seq_len is not None, "max_seq_len must be provided when theta is given for multi-head self attention with RoPE."
+        
+        if theta:
+            d_k = d_model//num_heads
+            self.rope = RotaryPositionalEmbedding(theta,d_k, max_seq_len,device, dtype)
+        else:
+            self.rope = None
 
-    def forward(self, x: Float[Tensor, " ..."])->Float[Tensor, " ..."]:
+    def forward(self, x: Float[Tensor, " ..."], token_positions: Optional[Int[Tensor, "..."]]= None) -> Float[Tensor, " ..."]:
         # get Q, K, V matrices
-        Q = self.q_proj_weight.forward(x) # output shape is [batch seq d_model]
-        K = self.k_proj_weight.forward(x)
-        V = self.v_proj_weight.forward(x)
+        Q = self.q_proj.forward(x) # output shape is [batch seq d_model]
+        K = self.k_proj.forward(x)
+        V = self.v_proj.forward(x)
 
         # create causal mask intepreting the second to last dim as seq dim
         if self.causal_mask is None:    
             seq_dim = x.shape[-2]
-            cmask = torch.tril(torch.ones(seq_dim,seq_dim))
+            cmask = torch.tril(torch.ones(seq_dim, seq_dim, dtype=x.dtype, device=x.device))
         else:
-            cmask = self.causal_mask
+            # Slice the pre-computed mask to match actual sequence length (could be < than max_seq_len)
+            seq_dim = x.shape[-2]
+            cmask = self.causal_mask[:seq_dim, :seq_dim]
 
         # get slice size for multi-head self attention
         d_k = self.d_model // self.num_heads
@@ -250,18 +260,27 @@ class multihead_self_attention(nn.Module):
 
         q_heads = rearrange(Q,"batch seq (heads d_k) -> batch heads seq d_k", d_k=d_k)
         k_heads = rearrange(K,"batch seq (heads d_k) -> batch heads seq d_k", d_k=d_k)
+
+        # apply RoPE to q_heads and k_heads
+        if self.rope:
+            if token_positions is None:
+                token_positions = torch.arange(seq_dim,device=x.device)
+                token_positions = rearrange(token_positions, "seq -> 1 seq") # 1 seq allows broadcast across batch dim
+            
+            q_heads = self.rope.forward(q_heads,token_positions)
+            k_heads = self.rope.forward(k_heads,token_positions)
+
         v_heads = rearrange(V, "batch seq (heads d_v) -> batch heads seq d_v", d_v=d_v)
 
         mha_heads = scaled_dot_product_attention(q_heads, k_heads, v_heads, cmask)
         mha = rearrange(mha_heads, "batch heads seq d_v -> batch seq (heads d_v)")
 
         # apply o_proj_weight to the concatenated multi-head attention product
-        out = self.o_proj_weight.forward(mha)
+        out = self.output_proj.forward(mha)
 
         return out
-        
 
-    
+
 
         
 
