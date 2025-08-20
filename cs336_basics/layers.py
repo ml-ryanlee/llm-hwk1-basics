@@ -3,6 +3,7 @@ import math
 import sys
 import torch.nn as nn
 import torch.nn.functional as F
+from collections.abc import Callable, Iterable
 from einops import rearrange, einsum, reduce, repeat
 from typing import IO, Any, BinaryIO, Optional
 from jaxtyping import Float, Int,Bool
@@ -280,7 +281,87 @@ class MultiheadSelfAttention(nn.Module):
 
         return out
 
+def cross_entropy_loss(logits: Float[Tensor, ""], targets: Int[Tensor, ""])->Float[Tensor, ""]:
+    """Given a tensor of inputs and targets, compute the average cross-entropy
+    loss across examples (batch).
+    Args:
+        logits (Float[Tensor, "batch_size vocab_size"]): logits[i][j] is the
+            unnormalized logit of jth class for the ith example.
+        targets (Int[Tensor, "batch_size"]): Tensor of shape (batch_size,) with the index of the correct class.
+            Each value must be between 0 and `num_classes - 1`.
 
+    Returns:
+        Float[Tensor, ""]: The average cross-entropy loss across examples.
+    """
+    # subtract the max value along the vocab dim dimension (logits are. batch x seq x vocab)
+    max_dim_value = torch.max(logits,dim=-1,keepdim=True).values
+    shifted_logits = logits - max_dim_value
 
+    # get sum of exp(logits)
+    exp_shifted_logits = torch.exp(shifted_logits) # batch, seq, vocab
+    sum_exp_shifted_logits = torch.sum(exp_shifted_logits,dim=-1, keepdim=True)
+
+    # get log of (sum(exp(logits)))
+    vocab_logit_sum = torch.log(sum_exp_shifted_logits) # (batch, 1)
+    
+    # get the logit for the target at a batch position with torch.gather 
+    reshaped_targets = rearrange(targets,"batch -> batch 1")
+    target_logits = torch.gather(shifted_logits, dim=-1,index=reshaped_targets)
+
+    assert target_logits.shape == vocab_logit_sum.shape
+
+    # get score by subtracting target_logits from vocab_logit sum
+    batch_scores = vocab_logit_sum-target_logits
+
+    # get average across batch
+    return reduce(batch_scores, "batch 1 -> ","mean")
+
+class AdamW(torch.optim.Optimizer):
+    def __init__(self,params,lr=1e-3, betas=(0.9,0.999), eps=1e-8, weight_decay=0.01):
+        if lr < 0:
+            raise ValueError(f"Invalid learning rate: {lr}")
+        defaults = {"lr":lr,
+                    "betas":betas,
+                    "eps":eps,
+                    "weight_decay":weight_decay
+                    }
+        # automatically initializes self.state
+        super().__init__(params, defaults)
+
+    def step(self, closure: Optional[Callable] = None):
+        loss = None if closure is None else closure()
         
+        for group in self.param_groups:
+            lr = group["lr"]
+            beta1, beta2 = group["betas"]
+            eps = group["eps"]
+            weight_decay = group["weight_decay"]
+            
+            for p in group["params"]:
+                if p.grad is None:
+                    continue
+                state = self.state[p]
 
+                # get state related information or initialize it
+                t = state.get("t",1)
+                grad = p.grad.data
+
+                # update first and second moment
+                m = beta1*state.get("m",torch.zeros_like(p.data))+(1-beta1)*grad
+                v = beta2*state.get("v",torch.zeros_like(p.data))+(1-beta2)*grad**2                
+
+                # calculate lr for step t
+                lr_t = lr*(math.sqrt(1-beta2**t))/(1-beta1**t)
+                
+                # update parameters
+                p.data -= lr_t*m/(v**(1/2)+eps)
+                
+                # apply weight decay
+                p.data -= lr*weight_decay*p.data
+
+                # save state for next optimizer step
+                state["m"] = m
+                state["v"] = v
+                state["t"] = t+1
+        
+        return loss

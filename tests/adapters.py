@@ -8,7 +8,7 @@ from cs336_basics.train_bpe import train_bpe
 from cs336_basics.tokenizer import Tokenizer
 from cs336_basics.layers import Linear,Embedding, RMSNorm,PositionwiseFeedforward
 from cs336_basics.layers import RotaryPositionalEmbedding,MultiheadSelfAttention
-from cs336_basics.layers import softmax, scaled_dot_product_attention
+from cs336_basics.layers import softmax, scaled_dot_product_attention,cross_entropy_loss,AdamW
 from cs336_basics.transformer import PrenormBlock, Transformer
 import numpy.typing as npt
 import torch
@@ -486,7 +486,7 @@ def run_cross_entropy(inputs: Float[Tensor, " batch_size vocab_size"], targets: 
     Returns:
         Float[Tensor, ""]: The average cross-entropy loss across examples.
     """
-    raise NotImplementedError
+    return cross_entropy_loss(inputs, targets)
 
 
 def run_gradient_clipping(parameters: Iterable[torch.nn.Parameter], max_l2_norm: float) -> None:
@@ -505,7 +505,7 @@ def get_adamw_cls() -> type[torch.optim.Optimizer]:
     """
     Returns a torch.optim.Optimizer that implements AdamW.
     """
-    raise NotImplementedError
+    return AdamW
 
 
 def run_get_lr_cosine_schedule(
