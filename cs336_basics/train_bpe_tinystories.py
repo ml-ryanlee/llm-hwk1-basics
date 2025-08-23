@@ -2,7 +2,7 @@ import cProfile
 import pstats
 import io
 
-from .train_bpe import train_bpe, save_vocab_and_merges
+from .tx_train_bpe import train_bpe, save_vocab_and_merges
 
 
 def main():

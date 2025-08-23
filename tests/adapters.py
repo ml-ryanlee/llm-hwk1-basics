@@ -4,16 +4,15 @@ import os
 from typing import IO, Any, BinaryIO
 from collections.abc import Iterable
 from jaxtyping import Float, Int, Bool
-from cs336_basics.train_bpe import train_bpe
-from cs336_basics.tokenizer import Tokenizer
-from cs336_basics.layers import Linear,Embedding, RMSNorm,PositionwiseFeedforward
-from cs336_basics.layers import RotaryPositionalEmbedding,MultiheadSelfAttention
-from cs336_basics.layers import softmax, scaled_dot_product_attention,cross_entropy_loss,AdamW
-from cs336_basics.transformer import PrenormBlock, Transformer
+from cs336_basics.tx_train_bpe import train_bpe
+from cs336_basics.tx_tokenizer import Tokenizer
+from cs336_basics.tx_model import Linear,Embedding, RMSNorm,PositionwiseFeedforward,PrenormBlock, Transformer
+from cs336_basics.tx_model import RotaryPositionalEmbedding,MultiheadSelfAttention,scaled_dot_product_attention
+from cs336_basics.tx_utils import softmax, cross_entropy_loss, gradient_clipping, data_loader, save_checkpoint, load_checkpoint
+from cs336_basics.tx_optimizer import AdamW,lr_cosine_schedule
 import numpy.typing as npt
 import torch
 from torch import Tensor
-
 
 
 def run_linear(
@@ -58,7 +57,7 @@ def run_embedding(
         Float[Tensor, "... d_model"]: Batch of embeddings returned by your Embedding layer.
     """
     embedding = Embedding(vocab_size, d_model)
-    embedding.load_state_dict({'embeddings':weights})
+    embedding.load_state_dict({'weight':weights})
     return embedding.forward(token_ids)
 
 def run_swiglu(
@@ -453,7 +452,7 @@ def run_get_batch(
         is the sampled input sequences, and the second tuple item is the corresponding
         language modeling labels.
     """
-    raise NotImplementedError
+    return data_loader(dataset,batch_size,context_length,device)
 
 
 def run_softmax(in_features: Float[Tensor, " ..."], dim: int) -> Float[Tensor, " ..."]:
@@ -498,7 +497,7 @@ def run_gradient_clipping(parameters: Iterable[torch.nn.Parameter], max_l2_norm:
 
     The gradients of the parameters (parameter.grad) should be modified in-place.
     """
-    raise NotImplementedError
+    return gradient_clipping(parameters,max_l2_norm)
 
 
 def get_adamw_cls() -> type[torch.optim.Optimizer]:
@@ -533,7 +532,7 @@ def run_get_lr_cosine_schedule(
     Returns:
         Learning rate at the given iteration under the specified schedule.
     """
-    raise NotImplementedError
+    return lr_cosine_schedule(it,max_learning_rate,min_learning_rate,warmup_iters,cosine_cycle_iters)
 
 
 def run_save_checkpoint(
@@ -552,8 +551,7 @@ def run_save_checkpoint(
             we've completed.
         out (str | os.PathLike | BinaryIO | IO[bytes]): Path or file-like object to serialize the model, optimizer, and iteration to.
     """
-    raise NotImplementedError
-
+    save_checkpoint(model,optimizer,iteration,out)
 
 def run_load_checkpoint(
     src: str | os.PathLike | BinaryIO | IO[bytes],
@@ -573,7 +571,7 @@ def run_load_checkpoint(
     Returns:
         int: the previously-serialized number of iterations.
     """
-    raise NotImplementedError
+    return load_checkpoint(src, model, optimizer)
 
 
 def get_tokenizer(

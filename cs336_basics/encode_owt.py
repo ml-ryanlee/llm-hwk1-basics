@@ -7,8 +7,8 @@ import time
 from pathlib import Path
 from tqdm import tqdm
 
-from .tokenizer import Tokenizer
-from .train_bpe import find_chunk_boundaries
+from .tx_tokenizer import Tokenizer
+from .tx_train_bpe import find_chunk_boundaries
 
 def encode_text_chunk(args: Tuple[str, int, int, str, str, List[str]]) -> List[int]:
     """

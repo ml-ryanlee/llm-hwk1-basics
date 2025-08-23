@@ -7,6 +7,7 @@ from collections.abc import Callable, Iterable
 from einops import rearrange, einsum, reduce, repeat
 from typing import IO, Any, BinaryIO, Optional
 from jaxtyping import Float, Int,Bool
+from cs336_basics.tx_utils import softmax
 from torch import Tensor
 
 # y = Wx (no bias terms!)
@@ -138,23 +139,6 @@ class RotaryPositionalEmbedding(nn.Module):
 
         return y
 
-def softmax(logits: Float[Tensor, " ..."], dim: int) -> Float[Tensor, " ..."]:
-    # get max values over specified dimension
-    max_values = torch.max(logits,dim=dim,keepdim=True).values
-
-    # subtract max_values from x so max element is 0
-    shifted = logits-max_values # broadcast should work
-
-    # get exp of shifted terms
-    shifted_exps = torch.exp(shifted)
-
-    # get sum of shifted terms
-    shifted_exp_sums = torch.sum(shifted_exps, dim=dim, keepdim=True)
-
-    # calculate product
-    product = shifted_exps / shifted_exp_sums
-
-    return product
 
 def scaled_dot_product_attention(
         Q: Float[Tensor, " ... queries d_k"],
@@ -281,87 +265,69 @@ class MultiheadSelfAttention(nn.Module):
 
         return out
 
-def cross_entropy_loss(logits: Float[Tensor, ""], targets: Int[Tensor, ""])->Float[Tensor, ""]:
-    """Given a tensor of inputs and targets, compute the average cross-entropy
-    loss across examples (batch).
-    Args:
-        logits (Float[Tensor, "batch_size vocab_size"]): logits[i][j] is the
-            unnormalized logit of jth class for the ith example.
-        targets (Int[Tensor, "batch_size"]): Tensor of shape (batch_size,) with the index of the correct class.
-            Each value must be between 0 and `num_classes - 1`.
+class PrenormBlock(nn.Module):
+    def __init__(self, d_model:int, num_heads:int, d_ff:int,
+                  max_seq_len:int, theta:float, device=None, dtype=None):
+        super().__init__()
+        # norm layer
+        self.ln1 = RMSNorm(d_model,device=device,dtype=dtype)
+        # mhsa with rope
+        self.attn = MultiheadSelfAttention(d_model,num_heads,max_seq_len,theta,device,dtype)
+        # add step
+        # norm layer
+        self.ln2 = RMSNorm(d_model,device=device,dtype=dtype)
+        # positionwise feed forward
+        self.ffn = PositionwiseFeedforward(d_model,d_ff,device,dtype)
+        # add to output
 
-    Returns:
-        Float[Tensor, ""]: The average cross-entropy loss across examples.
-    """
-    # subtract the max value along the vocab dim dimension (logits are. batch x seq x vocab)
-    max_dim_value = torch.max(logits,dim=-1,keepdim=True).values
-    shifted_logits = logits - max_dim_value
-
-    # get sum of exp(logits)
-    exp_shifted_logits = torch.exp(shifted_logits) # batch, seq, vocab
-    sum_exp_shifted_logits = torch.sum(exp_shifted_logits,dim=-1, keepdim=True)
-
-    # get log of (sum(exp(logits)))
-    vocab_logit_sum = torch.log(sum_exp_shifted_logits) # (batch, 1)
-    
-    # get the logit for the target at a batch position with torch.gather 
-    reshaped_targets = rearrange(targets,"batch -> batch 1")
-    target_logits = torch.gather(shifted_logits, dim=-1,index=reshaped_targets)
-
-    assert target_logits.shape == vocab_logit_sum.shape
-
-    # get score by subtracting target_logits from vocab_logit sum
-    batch_scores = vocab_logit_sum-target_logits
-
-    # get average across batch
-    return reduce(batch_scores, "batch 1 -> ","mean")
-
-class AdamW(torch.optim.Optimizer):
-    def __init__(self,params,lr=1e-3, betas=(0.9,0.999), eps=1e-8, weight_decay=0.01):
-        if lr < 0:
-            raise ValueError(f"Invalid learning rate: {lr}")
-        defaults = {"lr":lr,
-                    "betas":betas,
-                    "eps":eps,
-                    "weight_decay":weight_decay
-                    }
-        # automatically initializes self.state
-        super().__init__(params, defaults)
-
-    def step(self, closure: Optional[Callable] = None):
-        loss = None if closure is None else closure()
+    def forward(self, x: Float[Tensor, " ..."], token_positions:Optional[Int[Tensor, " ..."]]=None)-> Float[Tensor, "..."]:
         
-        for group in self.param_groups:
-            lr = group["lr"]
-            beta1, beta2 = group["betas"]
-            eps = group["eps"]
-            weight_decay = group["weight_decay"]
-            
-            for p in group["params"]:
-                if p.grad is None:
-                    continue
-                state = self.state[p]
-
-                # get state related information or initialize it
-                t = state.get("t",1)
-                grad = p.grad.data
-
-                # update first and second moment
-                m = beta1*state.get("m",torch.zeros_like(p.data))+(1-beta1)*grad
-                v = beta2*state.get("v",torch.zeros_like(p.data))+(1-beta2)*grad**2                
-
-                # calculate lr for step t
-                lr_t = lr*(math.sqrt(1-beta2**t))/(1-beta1**t)
-                
-                # update parameters
-                p.data -= lr_t*m/(v**(1/2)+eps)
-                
-                # apply weight decay
-                p.data -= lr*weight_decay*p.data
-
-                # save state for next optimizer step
-                state["m"] = m
-                state["v"] = v
-                state["t"] = t+1
+        # first Tx operation, Norm + MHSA w/ RoPE
+        norm1_out = self.ln1.forward(x)
+        # we may have to define token_positions if it is not given
+        attn_out = self.attn.forward(norm1_out,token_positions)
         
-        return loss
+        # ensure no broadcasting, elementwise addition on [batch seq d_model]
+        assert(x.shape == attn_out.shape)
+        resid1_out = attn_out + x
+
+        # second Tx operation, Norm + SwiGLU
+        norm2_out = self.ln2.forward(resid1_out)
+        ffn_out = self.ffn.forward(norm2_out)
+
+        # ensure no broadcasting, elementwise addition
+        assert(ffn_out.shape == resid1_out.shape)
+        final_out = resid1_out + ffn_out
+        return final_out
+
+class Transformer(nn.Module):
+    def __init__(
+            self, vocab_size: int, 
+            context_length: int,
+            d_model: int,
+            num_layers: int,
+            num_heads: int,
+            d_ff: int,
+            rope_theta: float,
+            device=None, dtype=None):
+       super().__init__()
+       self.token_embeddings = Embedding(vocab_size,d_model,device=device,dtype=dtype)
+       self.layers = nn.ModuleList([PrenormBlock(d_model,num_heads,d_ff,context_length,rope_theta,device,dtype) for _ in range(num_layers)])
+       self.ln_final = RMSNorm(d_model,device=device,dtype=dtype)
+       self.lm_head = Linear(d_model,vocab_size,device=device,dtype=dtype)
+
+    def forward(self,x:Int[Tensor, "..."]) -> Float[Tensor, "..."]:
+        # 1. token embed step
+        x = self.token_embeddings.forward(x)
+
+        # 2. prenorm blocks step
+        for layer in self.layers:
+            x = layer.forward(x)
+        
+        # 3. Final norm
+        x = self.ln_final.forward(x)
+
+        # 4. Vocab projection or lm_head
+        x = self.lm_head(x)
+
+        return x
