@@ -10,3 +10,5 @@ data/
 scratch.py
 *scratch.py
 **/*scratch.py
+*.pyc
+*.egg-info/*
