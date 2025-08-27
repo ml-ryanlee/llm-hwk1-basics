@@ -32,15 +32,15 @@ def softmax(logits: Float[Tensor, " ..."], dim: int) -> Float[Tensor, " ..."]:
 
 def cross_entropy_loss(logits: Float[Tensor, ""], targets: Int[Tensor, ""])->Float[Tensor, ""]:
     """Given a tensor of inputs and targets, compute the average cross-entropy
-    loss across examples (batch).
+    loss across examples and positions.
     Args:
-        logits (Float[Tensor, "batch_size vocab_size"]): logits[i][j] is the
-            unnormalized logit of jth class for the ith example.
-        targets (Int[Tensor, "batch_size"]): Tensor of shape (batch_size,) with the index of the correct class.
-            Each value must be between 0 and `num_classes - 1`.
+        logits (Float[Tensor, "batch_size context_length vocab_size"]): logits[i][j][k] is the
+            unnormalized logit of kth class for the jth position in the ith example.
+        targets (Int[Tensor, "batch_size context_length"]): Tensor of shape (batch_size, context_length) with the index of the correct class at each position.
+            Each value must be between 0 and `vocab_size - 1`.
 
     Returns:
-        Float[Tensor, ""]: The average cross-entropy loss across examples.
+        Float[Tensor, ""]: The average cross-entropy loss across examples and positions.
     """
     # subtract the max value along the vocab dim dimension (logits are. batch x seq x vocab)
     max_dim_value = torch.max(logits,dim=-1,keepdim=True).values
@@ -48,22 +48,22 @@ def cross_entropy_loss(logits: Float[Tensor, ""], targets: Int[Tensor, ""])->Flo
 
     # get sum of exp(logits)
     exp_shifted_logits = torch.exp(shifted_logits) # batch, seq, vocab
-    sum_exp_shifted_logits = torch.sum(exp_shifted_logits,dim=-1, keepdim=True)
+    sum_exp_shifted_logits = torch.sum(exp_shifted_logits,dim=-1, keepdim=True) #torch.sum-> batch,seq,1
 
     # get log of (sum(exp(logits)))
-    vocab_logit_sum = torch.log(sum_exp_shifted_logits) # (batch, 1)
+    vocab_logit_sum = torch.log(sum_exp_shifted_logits) # (batch, seq, 1) shape
     
     # get the logit for the target at a batch position with torch.gather 
-    reshaped_targets = rearrange(targets,"batch -> batch 1")
+    reshaped_targets = rearrange(targets,"... -> ... 1")
     target_logits = torch.gather(shifted_logits, dim=-1,index=reshaped_targets)
 
     assert target_logits.shape == vocab_logit_sum.shape
 
     # get score by subtracting target_logits from vocab_logit sum
-    batch_scores = vocab_logit_sum-target_logits
+    batch_scores = vocab_logit_sum-target_logits # (batch, seq, 1)
 
     # get average across batch
-    return reduce(batch_scores, "batch 1 -> ","mean")
+    return reduce(batch_scores, "... -> ","mean")
 
 def gradient_clipping(parameters: Iterable[torch.nn.Parameter], max_l2_norm: float, eps=1e-6) -> None:
     
@@ -121,11 +121,11 @@ def data_loader(
 
         # sample numpy array from start index to context_length, convert to tensor of ints
         seq_array = dataset[start_idx:end_idx]
-        seq_tensor = torch.tensor(seq_array,device=device)
+        seq_tensor = torch.tensor(seq_array,device=device,dtype=torch.long)
 
         # for targets, sample from start_index+1, convert to tensor of ints
         target_array = dataset[(start_idx+1):(end_idx+1)]
-        target_tensor = torch.tensor(target_array,device=device)
+        target_tensor = torch.tensor(target_array,device=device,dtype=torch.long)
 
         # add to lists
         seqs.append(seq_tensor)
@@ -185,3 +185,67 @@ def load_checkpoint(
     optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
     return checkpoint['iteration']
 
+def decode(
+    model,  # Transformer
+    tokenizer,  # Tokenizer
+    prompt: str,
+    max_tokens: int = 100,
+    temperature: float = 1.0,
+    top_p: float = 1.0,
+    end_token: str = "<|endoftext|>"
+) -> str:
+    """
+    Generate text from a trained language model using autoregressive sampling.
+    
+    Args:
+        model (Transformer): The trained language model to generate from.
+        tokenizer (Tokenizer): The tokenizer for encoding/decoding text.
+        prompt (str): The starting text prompt to continue from.
+        max_tokens (int, optional): Maximum number of tokens to generate. Defaults to 100.
+        temperature (float, optional): Temperature for sampling. Higher values make output more random. Defaults to 1.0.
+        top_p (float, optional): Top-p sampling threshold for nucleus sampling. Defaults to 1.0.
+        end_token (str, optional): Special token that signals the end of generation. Defaults to "<|endoftext|>".
+    
+    Returns:
+        str: The generated text continuation.
+    """
+    
+    # TODO: Implement the decode function
+    pass
+
+def cleanup_old_checkpoints(checkpoint_path: str, keep_count: int):
+    """
+    Remove old checkpoints, keeping only the most recent ones.
+    
+    Args:
+        checkpoint_path (str): Base path for checkpoint files (e.g., './results/checkpoint')
+        keep_count (int): Number of recent checkpoints to keep (0 to keep all)
+    """
+    if keep_count <= 0:
+        return
+    
+    import glob
+    import re
+    
+    # Get all checkpoint files for this base path
+    pattern = f"{checkpoint_path}_step_*.ckpt"
+    checkpoint_files = glob.glob(pattern)
+    
+    # Extract step numbers and sort by step
+    step_files = []
+    for file in checkpoint_files:
+        match = re.search(r'_step_(\d+)', file)
+        if match:
+            step = int(match.group(1))
+            step_files.append((step, file))
+    
+    step_files.sort(reverse=True)  # Sort by step number, newest first
+    
+    # Remove old checkpoints
+    for step, file in step_files[keep_count:]:
+        try:
+            os.remove(file)
+            print(f"Removed old checkpoint: {file}")
+        except OSError as e:
+            print(f"Warning: Could not remove {file}: {e}")
+    

@@ -8,8 +8,8 @@ import time
 from pathlib import Path
 from tqdm import tqdm
 
-from .tx_tokenizer import Tokenizer
-from .tx_train_bpe import find_chunk_boundaries
+from cs336_basics.tx_tokenizer import Tokenizer
+from cs336_basics.tx_train_bpe import find_chunk_boundaries
 
 def encode_text_chunk(args: Tuple[str, int, int, str, str, List[str]]) -> List[int]:
     """
@@ -127,14 +127,6 @@ def main():
     
     special_tokens = ["<|endoftext|>"]
     
-    # Encode training set
-    if os.path.exists(train_data_path):
-        encode_dataset_parallel(
-            train_data_path, vocab_path, merges_path, 
-            train_output, special_tokens
-        )
-    else:
-        print(f"Training data not found at {train_data_path}")
     
     # Encode validation set
     if os.path.exists(valid_data_path):
@@ -144,6 +136,15 @@ def main():
         )
     else:
         print(f"Validation data not found at {valid_data_path}")
+    
+    # Encode training set
+    # if os.path.exists(train_data_path):
+    #     encode_dataset_parallel(
+    #         train_data_path, vocab_path, merges_path, 
+    #         train_output, special_tokens
+    #     )
+    # else:
+    #     print(f"Training data not found at {train_data_path}")
 
 if __name__ == "__main__":
     main()
