@@ -12,3 +12,4 @@ scratch.py
 **/*scratch.py
 *.pyc
 *.egg-info/*
+*.ckpt

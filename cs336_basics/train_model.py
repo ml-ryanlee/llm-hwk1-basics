@@ -201,6 +201,25 @@ def main():
     print(f"Model initialized with {sum(p.numel() for p in model.parameters())} parameters")
     print(f"Training on device: {device}")
 
+    # Create configuration dictionary for saving
+    config = {
+        'vocab_size': args.vocab_size,
+        'context_length': args.context_length,
+        'd_model': args.d_model,
+        'num_layers': args.num_layers,
+        'num_heads': args.num_heads,
+        'd_ff': args.d_ff,
+        'rope_theta': args.rope_theta,
+        'device': device,
+        # Also save optimizer config for reference
+        'optimizer_config': {
+            'lr': args.lr,
+            'betas': (args.beta1, args.beta2),
+            'eps': args.eps,
+            'weight_decay': args.weight_decay
+        }
+    }
+
     # resume from checkpoint if specified
     if args.resume_from:
         if not os.path.exists(args.resume_from):
@@ -247,7 +266,7 @@ def main():
             if checkpoint_dir and not os.path.exists(checkpoint_dir):
                 os.makedirs(checkpoint_dir)
             checkpoint_file = f"{args.checkpoint_path}_step_{step:06d}.ckpt"
-            save_checkpoint(model, optimizer, step, checkpoint_file)
+            save_checkpoint(model, optimizer, step, checkpoint_file, config)
             print(f"Checkpoint saved: {checkpoint_file}")
             
             # Clean up old checkpoints
@@ -274,7 +293,7 @@ def main():
     # save final checkpoint
     if args.checkpoint_path:
         final_checkpoint_file = f"{args.checkpoint_path}_step_{args.steps:06d}_final.ckpt"
-        save_checkpoint(model, optimizer, args.steps, final_checkpoint_file)
+        save_checkpoint(model, optimizer, args.steps, final_checkpoint_file, config)
         print(f"Final checkpoint saved to {final_checkpoint_file}")
     
     # save model

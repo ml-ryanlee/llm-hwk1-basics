@@ -143,6 +143,7 @@ def save_checkpoint(
     optimizer: torch.optim.Optimizer,
     iteration: int,
     out: str | os.PathLike | BinaryIO | IO[bytes],
+    config: dict = None,
 ):
     """
     Given a model, optimizer, and an iteration number, serialize them to disk.
@@ -153,12 +154,18 @@ def save_checkpoint(
         iteration (int): Serialize this value, which represents the number of training iterations
             we've completed.
         out (str | os.PathLike | BinaryIO | IO[bytes]): Path or file-like object to serialize the model, optimizer, and iteration to.
+        config (dict): Optional configuration dictionary to save with the checkpoint.
     """
     checkpoint = {
         'model_state_dict': model.state_dict(),
         'optimizer_state_dict': optimizer.state_dict(),
         'iteration': iteration
     }
+    
+    # Add configuration if provided
+    if config is not None:
+        checkpoint['config'] = config
+    
     torch.save(checkpoint, out)
 
 
@@ -185,33 +192,21 @@ def load_checkpoint(
     optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
     return checkpoint['iteration']
 
-def decode(
-    model,  # Transformer
-    tokenizer,  # Tokenizer
-    prompt: str,
-    max_tokens: int = 100,
-    temperature: float = 1.0,
-    top_p: float = 1.0,
-    end_token: str = "<|endoftext|>"
-) -> str:
+
+def load_checkpoint_config(
+    src: str | os.PathLike | BinaryIO | IO[bytes],
+) -> dict:
     """
-    Generate text from a trained language model using autoregressive sampling.
+    Load only the configuration from a checkpoint file.
     
     Args:
-        model (Transformer): The trained language model to generate from.
-        tokenizer (Tokenizer): The tokenizer for encoding/decoding text.
-        prompt (str): The starting text prompt to continue from.
-        max_tokens (int, optional): Maximum number of tokens to generate. Defaults to 100.
-        temperature (float, optional): Temperature for sampling. Higher values make output more random. Defaults to 1.0.
-        top_p (float, optional): Top-p sampling threshold for nucleus sampling. Defaults to 1.0.
-        end_token (str, optional): Special token that signals the end of generation. Defaults to "<|endoftext|>".
-    
+        src (str | os.PathLike | BinaryIO | IO[bytes]): Path or file-like object to serialized checkpoint.
     Returns:
-        str: The generated text continuation.
+        dict: The model configuration dictionary, or None if not found.
     """
-    
-    # TODO: Implement the decode function
-    pass
+    checkpoint = torch.load(src, map_location='cpu')  # Load on CPU to avoid GPU memory issues
+    return checkpoint.get('config', None)
+
 
 def cleanup_old_checkpoints(checkpoint_path: str, keep_count: int):
     """
