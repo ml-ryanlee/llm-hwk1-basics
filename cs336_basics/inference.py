@@ -104,7 +104,7 @@ def main():
     
     # run decode
     try:
-        generated_text = decode(model, tokenizer,example_text,max_tokens=10)
+        generated_text = decode(model, tokenizer,example_text,max_tokens=10,sampling=True)
         print(f"Input: {example_text}")
         print(f"Generated: {generated_text}")
     except Exception as e:
