@@ -10,6 +10,7 @@ from cs336_basics.tx_model import RotaryPositionalEmbedding,MultiheadSelfAttenti
 from cs336_basics.tx_utils import softmax, cross_entropy_loss, gradient_clipping, data_loader, save_checkpoint, load_checkpoint, cleanup_old_checkpoints
 from cs336_basics.tx_optimizer import AdamW
 from keys import WANDB_API_KEY
+
 import numpy.typing as npt
 import torch
 import wandb
@@ -17,7 +18,7 @@ from torch import Tensor
 
 os.environ["WANDB_API_KEY"] = WANDB_API_KEY
 
-def train_single_lr(config):
+def train_single_batch(config):
     # Extract parameters from config
     lr = config['lr']
     train_path = config['train_path']
@@ -190,8 +191,7 @@ def main():
         'train_path': '/project/jonmay_1426/ryantlee/llm-hwk1-basics/data/tinystories_train_tokens.npy',
         'val_path': '/project/jonmay_1426/ryantlee/llm-hwk1-basics/data/tinystories_valid_tokens.npy',
         
-        # Data settings
-        'batch_size': 64,
+        # Data settings (lr will be varied)
         'context_length': 256,
         
         # Model settings
@@ -202,7 +202,8 @@ def main():
         'num_layers': 4,
         'num_heads': 16,
         
-        # Optimizer settings (lr will be varied)
+        # Optimizer settings 
+        'lr':1e-3,
         'beta1': 0.9,
         'beta2': 0.999,
         'eps': 1e-8,
@@ -217,34 +218,34 @@ def main():
     }
     
     # Learning rates to test (centered around 0.001)
-    learning_rates = [2e-2, 5e-2,1e-1,2e-1,5e-1] #[1e-4, 2e-4, 5e-4, 1e-3, 2e-3, 5e-3, 1e-2]
+    batch_sizes = [64,126,256,1024,2048,4096]
     
-    print("Starting learning rate experiments...")
-    print(f"Testing learning rates: {learning_rates}")
+    print("Starting batch size experiments...")
+    print(f"Testing batch sizes: {batch_sizes}")
     print("=" * 80)
     
     wandb.login()
     
-    for lr in learning_rates:
+    for batch_size in batch_sizes:
         # Create config for this specific run
         config = base_config.copy()
-        config['lr'] = lr
-        config['checkpoint_path'] = f'./results/lr_{lr}_checkpoint'
+        config['batch_size'] = batch_size
+        config['checkpoint_path'] = f'./results/batch_size_{batch_size}_checkpoint'
         
         # Initialize wandb for this run
         wandb.init(
-            project="cs336-hwk1-experiments",
-            name=f"lr_{lr}",
+            project="cs336-hwk1-batch-experiments",
+            name=f"batch_{batch_size}",
             config=config,
             reinit=True
         )
         
-        print(f"\n{'='*20} Training with lr={lr} {'='*20}")
+        print(f"\n{'='*20} Training with batch={batch_size} {'='*20}")
         try:
-            train_single_lr(config)
-            print(f"Completed training with lr={lr}")
+            train_single_batch(config)
+            print(f"Completed training with batch={batch_size}")
         except Exception as e:
-            print(f"Error with lr={lr}: {e}")
+            print(f"Error with batch={batch_size}: {e}")
         finally:
             wandb.finish()
         print("=" * 60)

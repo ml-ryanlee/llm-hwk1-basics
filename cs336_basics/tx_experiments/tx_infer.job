@@ -1,0 +1,33 @@
+#!/bin/bash
+	
+#SBATCH --partition=gpu
+#SBATCH --gres=gpu:a100:1
+#SBATCH --constraint=a100-80gb
+#SBATCH --ntasks=1
+#SBATCH --cpus-per-task=4
+#SBATCH --time=1:00:00
+#SBATCH --account=jonmay_231
+
+module purge
+module load gcc/13.3
+module load cuda/12.6.3
+# Note: You might not need to load python module with uv, but keep it if required
+
+# Print GPU and CUDA details
+echo "===== GPU Details ====="
+nvidia-smi
+
+# Add uv to PATH
+source $HOME/.local/bin/env
+
+# Navigate to project directory
+cd /project/jonmay_1426/ryantlee/llm-hwk1-basics
+
+# Create/sync virtual environment (if not already done)
+echo "===== Setting up uv environment ====="
+uv sync
+
+# Navigate to src directory and run with uv
+cd cs336_basics/tx_experiments
+echo "===== Running script with uv ====="
+uv run tx_infer.py

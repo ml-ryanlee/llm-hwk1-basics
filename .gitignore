@@ -13,3 +13,6 @@ scratch.py
 *.pyc
 *.egg-info/*
 *.ckpt
+
+# Secret keys
+keys.py
