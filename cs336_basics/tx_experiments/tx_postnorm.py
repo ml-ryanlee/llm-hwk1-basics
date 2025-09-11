@@ -5,7 +5,7 @@ from collections.abc import Iterable
 from jaxtyping import Float, Int, Bool
 from cs336_basics.tx_train_bpe import train_bpe
 from cs336_basics.tx_tokenizer import Tokenizer
-from cs336_basics.tx_model import Linear,Embedding, RMSNorm,PositionwiseFeedforward,PrenormBlock, Transformer
+from cs336_basics.tx_model import Linear,Embedding, PostNormTransformer, RMSNorm,PositionwiseFeedforward,PrenormBlock, Transformer
 from cs336_basics.tx_model import RotaryPositionalEmbedding,MultiheadSelfAttention,scaled_dot_product_attention
 from cs336_basics.tx_utils import softmax, cross_entropy_loss, gradient_clipping, data_loader, save_checkpoint, load_checkpoint, cleanup_old_checkpoints
 from cs336_basics.tx_optimizer import AdamW
@@ -15,9 +15,11 @@ import torch
 import wandb
 from torch import Tensor
 
+TRAIN_PATH = "/Users/ryanlee/code/llm-hwk1-basics/data/tinystories_train_tokens.npy"
+VALID_PATH = "/Users/ryanlee/code/llm-hwk1-basics/data/tinystories_valid_tokens.npy"
 os.environ["WANDB_API_KEY"] = 
 
-def train_single_lr(config):
+def train_model(config,tx_type):
     # Extract parameters from config
     lr = config['lr']
     train_path = config['train_path']
@@ -59,16 +61,28 @@ def train_single_lr(config):
     print(f"Loaded dataset with {len(trainset)} tokens")
 
     # Initialize model
-    model = Transformer(
-        vocab_size=vocab_size,
-        context_length=context_length,
-        d_model=d_model,
-        num_layers=num_layers,
-        num_heads=num_heads,
-        d_ff=d_ff,
-        rope_theta=rope_theta,
-        device=device
-    )
+    if tx_type == "prenorm":
+        model = Transformer(
+            vocab_size=vocab_size,
+            context_length=context_length,
+            d_model=d_model,
+            num_layers=num_layers,
+            num_heads=num_heads,
+            d_ff=d_ff,
+            rope_theta=rope_theta,
+            device=device
+        )
+    else:
+        model = PostNormTransformer(
+            vocab_size=vocab_size,
+            context_length=context_length,
+            d_model=d_model,
+            num_layers=num_layers,
+            num_heads=num_heads,
+            d_ff=d_ff,
+            rope_theta=rope_theta,
+            device=device
+        )
     
     # Initialize optimizer
     optimizer = AdamW(
@@ -138,6 +152,9 @@ def train_single_lr(config):
         # backward on loss
         loss.backward()
 
+        # apply gradient clipping
+        gradient_clipping(model.parameters(),max_l2_norm=1.0) #
+
         # step optimizer
         optimizer.step()
         
@@ -155,6 +172,8 @@ def train_single_lr(config):
 
         # logging
         if step % 10 == 0:  # Log every 10 steps
+            print(f"Step {step:4d}/{steps}: Train Loss = {loss.item():.4f}")
+
             wandb.log({
                 "train_loss": loss.item()
             }, step=step)
@@ -187,8 +206,8 @@ def main():
     # Fixed configuration - modify these as needed
     base_config = {
         # I/O settings
-        'train_path': '/project/jonmay_1426/ryantlee/llm-hwk1-basics/data/tinystories_train_tokens.npy',
-        'val_path': '/project/jonmay_1426/ryantlee/llm-hwk1-basics/data/tinystories_valid_tokens.npy',
+        'train_path': TRAIN_PATH,
+        'val_path': VALID_PATH,
         
         # Data settings
         'batch_size': 64,
@@ -211,9 +230,9 @@ def main():
         
         # Training settings - auto-detect best device
         'device': 'cuda' if torch.cuda.is_available() else 'mps' if torch.backends.mps.is_available() else 'cpu',
-        'steps': 2000,
-        'save_every': 10,
-        'eval_every': 100,
+        'steps': 2000,#set to 2000 for test
+        'save_every': 10, # change back to 10 for test (i don't want to save cps)
+        'eval_every': 100, # change back to 100 for test
         'keep_checkpoints': 3,
     }
     
@@ -224,28 +243,30 @@ def main():
     
     wandb.login()
     
-    for lr in learning_rates:
+    tx_types = ['postnorm','prenorm']
+
+    for tx_type in tx_types:
         # Create config for this specific run
         config = base_config.copy()
-        config['lr'] = lr
-        config['checkpoint_path'] = f'./results/lr_{lr}_checkpoint'
+        config['checkpoint_path'] = f'./results/tx_{tx_type}_checkpoint'
         
         # Initialize wandb for this run
         wandb.init(
-            project="cs336-hwk1-experiments",
-            name=f"lr_{lr}",
+            project="cs336-hwk1-postnorm-experiments",
+            name=f"tx_{tx_type}",
             config=config,
             reinit=True
         )
         
-        print(f"\n{'='*20} Training with lr={lr} {'='*20}")
+        print(f"\n{'='*20} Training with tx={tx_type}, learning rate = {config['lr']} {'='*20}")
         try:
-            train_single_lr(config)
-            print(f"Completed training with lr={lr}")
+            train_model(config,tx_type)
+            print(f"Completed training with tx {tx_type}")
         except Exception as e:
-            print(f"Error with lr={lr}: {e}")
+            print(f"Error with tx={tx_type}: {e}")
         finally:
-            wandb.finish()
+            pass
+            #wandb.finish()
         print("=" * 60)
 
 if __name__ == "__main__":

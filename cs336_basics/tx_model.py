@@ -54,7 +54,7 @@ class RMSNorm(nn.Module):
         super().__init__()
 
         # initialize gain factor
-        gain = torch.empty(d_model, dtype=dtype, device=device)
+        gain = torch.ones(d_model, dtype=dtype, device=device)
         self.weight = nn.Parameter(gain) #learnable
         self.d_model = d_model
         self.eps = eps
