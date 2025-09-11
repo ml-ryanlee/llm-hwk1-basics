@@ -304,7 +304,6 @@ class PostnormBlock(nn.Module):
     def __init__(self, d_model:int, num_heads:int, d_ff:int,
                   max_seq_len:int, theta:float, device=None, dtype=None):
         super().__init__()
-
         # mhsa with rope
         self.attn = MultiheadSelfAttention(d_model,num_heads,max_seq_len,theta,device,dtype)
         # add step
@@ -318,23 +317,20 @@ class PostnormBlock(nn.Module):
 
     def forward(self, x: Float[Tensor, " ..."], token_positions:Optional[Int[Tensor, " ..."]]=None)-> Float[Tensor, "..."]:
         
-        # first Tx operation, Norm + MHSA w/ RoPE
-        norm1_out = self.ln1.forward(x)
-        # we may have to define token_positions if it is not given
-        attn_out = self.attn.forward(norm1_out,token_positions)
-        
-        # ensure no broadcasting, elementwise addition on [batch seq d_model]
-        assert(x.shape == attn_out.shape)
-        resid1_out = attn_out + x
+        # MHSA block
+        attn_out = self.attn.forward(x,token_positions)
+        pre_norm_sum1 = attn_out+x
 
-        # second Tx operation, Norm + SwiGLU
-        norm2_out = self.ln2.forward(resid1_out)
-        ffn_out = self.ffn.forward(norm2_out)
+        # post norm
+        post_norm1 = self.ln1.forward(pre_norm_sum1)
 
-        # ensure no broadcasting, elementwise addition
-        assert(ffn_out.shape == resid1_out.shape)
-        final_out = resid1_out + ffn_out
-        return final_out
+        # SWIGLU FFN
+        swiglu_out = self.ffn.forward(post_norm1)
+        pre_norm_sum2 = swiglu_out+post_norm1
+
+        # final norm
+        post_norm2 = self.ln2.forward(pre_norm_sum2)
+        return post_norm2
 
 class Transformer(nn.Module):
     def __init__(
@@ -380,7 +376,7 @@ class PostNormTransformer(nn.Module):
             device=None, dtype=None):
        super().__init__()
        self.token_embeddings = Embedding(vocab_size,d_model,device=device,dtype=dtype)
-       self.layers = nn.ModuleList([PrenormBlock(d_model,num_heads,d_ff,context_length,rope_theta,device,dtype) for _ in range(num_layers)])
+       self.layers = nn.ModuleList([PostnormBlock(d_model,num_heads,d_ff,context_length,rope_theta,device,dtype) for _ in range(num_layers)])
        self.ln_final = RMSNorm(d_model,device=device,dtype=dtype)
        self.lm_head = Linear(d_model,vocab_size,device=device,dtype=dtype)
 
