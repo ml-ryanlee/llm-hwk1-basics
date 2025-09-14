@@ -306,12 +306,10 @@ class PostnormBlock(nn.Module):
         super().__init__()
         # mhsa with rope
         self.attn = MultiheadSelfAttention(d_model,num_heads,max_seq_len,theta,device,dtype)
-        # add step
         # norm layer
         self.ln1 = RMSNorm(d_model,device=device,dtype=dtype)
         # positionwise feed forward
         self.ffn = PositionwiseFeedforward(d_model,d_ff,device,dtype)
-        # add to output
         # norm layer
         self.ln2 = RMSNorm(d_model,device=device,dtype=dtype)
 
@@ -332,6 +330,32 @@ class PostnormBlock(nn.Module):
         post_norm2 = self.ln2.forward(pre_norm_sum2)
         return post_norm2
 
+class PrenormBlockNoRMS(nn.Module):
+    def __init__(self, d_model:int, num_heads:int, d_ff:int,
+                  max_seq_len:int, theta:float, device=None, dtype=None):
+        super().__init__()
+        # mhsa with rope
+        self.attn = MultiheadSelfAttention(d_model,num_heads,max_seq_len,theta,device,dtype)
+        # positionwise feed forward
+        self.ffn = PositionwiseFeedforward(d_model,d_ff,device,dtype)
+
+    def forward(self, x: Float[Tensor, " ..."], token_positions:Optional[Int[Tensor, " ..."]]=None)-> Float[Tensor, "..."]:
+        
+        # attention without prenorm
+        attn_out = self.attn.forward(x,token_positions)
+        
+        # ensure no broadcasting, elementwise addition on [batch seq d_model]
+        assert(x.shape == attn_out.shape)
+        resid1_out = attn_out + x
+
+        # second Tx operation, SwiGLU FFN without prenorm
+        ffn_out = self.ffn.forward(resid1_out)
+
+        # final residual concatenation
+        assert(ffn_out.shape == resid1_out.shape)
+        final_out = resid1_out + ffn_out
+        return final_out
+
 class Transformer(nn.Module):
     def __init__(
             self, vocab_size: int, 
@@ -341,6 +365,70 @@ class Transformer(nn.Module):
             num_heads: int,
             d_ff: int,
             rope_theta: float,
+            device=None, dtype=None):
+       super().__init__()
+       self.token_embeddings = Embedding(vocab_size,d_model,device=device,dtype=dtype)
+       self.layers = nn.ModuleList([PrenormBlock(d_model,num_heads,d_ff,context_length,rope_theta,device,dtype) for _ in range(num_layers)])
+       self.ln_final = RMSNorm(d_model,device=device,dtype=dtype)
+       self.lm_head = Linear(d_model,vocab_size,device=device,dtype=dtype)
+
+    def forward(self,x:Int[Tensor, "..."]) -> Float[Tensor, "..."]:
+        # 1. token embed step
+        x = self.token_embeddings.forward(x)
+
+        # 2. prenorm blocks step
+        for layer in self.layers:
+            x = layer.forward(x)
+        
+        # 3. Final norm
+        x = self.ln_final.forward(x)
+
+        # 4. Vocab projection or lm_head
+        x = self.lm_head(x)
+
+        return x
+
+class NoRMSTransformer(nn.Module):
+    def __init__(
+            self, vocab_size: int, 
+            context_length: int,
+            d_model: int,
+            num_layers: int,
+            num_heads: int,
+            d_ff: int,
+            rope_theta: float,
+            device=None, dtype=None):
+       super().__init__()
+       self.token_embeddings = Embedding(vocab_size,d_model,device=device,dtype=dtype)
+       self.layers = nn.ModuleList([PrenormBlockNoRMS(d_model,num_heads,d_ff,context_length,rope_theta,device,dtype) for _ in range(num_layers)])
+       self.ln_final = RMSNorm(d_model,device=device,dtype=dtype)
+       self.lm_head = Linear(d_model,vocab_size,device=device,dtype=dtype)
+
+    def forward(self,x:Int[Tensor, "..."]) -> Float[Tensor, "..."]:
+        # 1. token embed step
+        x = self.token_embeddings.forward(x)
+
+        # 2. prenorm blocks step
+        for layer in self.layers:
+            x = layer.forward(x)
+        
+        # 3. Final norm
+        x = self.ln_final.forward(x)
+
+        # 4. Vocab projection or lm_head
+        x = self.lm_head(x)
+
+        return x
+
+class NoPETransformer(nn.Module):
+    def __init__(
+            self, vocab_size: int, 
+            context_length: int,
+            d_model: int,
+            num_layers: int,
+            num_heads: int,
+            d_ff: int,
+            rope_theta: None,
             device=None, dtype=None):
        super().__init__()
        self.token_embeddings = Embedding(vocab_size,d_model,device=device,dtype=dtype)
