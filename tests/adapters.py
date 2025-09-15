@@ -6,7 +6,7 @@ from collections.abc import Iterable
 from jaxtyping import Float, Int, Bool
 from cs336_basics.tx_train_bpe import train_bpe
 from cs336_basics.tx_tokenizer import Tokenizer
-from cs336_basics.tx_model import Linear,Embedding, RMSNorm,PositionwiseFeedforward,PrenormBlock, Transformer
+from cs336_basics.tx_model import Linear,Embedding, RMSNorm,PositionwiseFeedforward,PrenormBlock, Transformer,SiLUFeedforward
 from cs336_basics.tx_model import RotaryPositionalEmbedding,MultiheadSelfAttention,scaled_dot_product_attention
 from cs336_basics.tx_utils import softmax, cross_entropy_loss, gradient_clipping, data_loader, save_checkpoint, load_checkpoint
 from cs336_basics.tx_optimizer import AdamW,lr_cosine_schedule
@@ -429,7 +429,7 @@ def run_silu(in_features: Float[Tensor, " ..."]) -> Float[Tensor, " ..."]:
         Float[Tensor,"..."]: of with the same shape as `in_features` with the output of applying
         SiLU to each element.
     """
-    raise NotImplementedError
+    return in_features * torch.sigmoid(in_features)
 
 
 def run_get_batch(
